@@ -1,0 +1,139 @@
+AWSTemplateFormatVersion: "2010-09-09"
+
+Resources:
+  MyLambdaFunction:
+    Type: AWS::Lambda::Function
+    Properties:
+      Handler: index.handler
+      Role: arn:aws:iam::462258285762:role/LabRole
+      FunctionName: trigger_StepFunctions
+      Runtime: nodejs14.x
+      Timeout: 240
+      MemorySize: 256
+      Code:
+        S3Bucket: projectbucket5409
+        S3Key: trigger_stepFunction.zip # Replace with the actual key of your JavaScript file in the S3 bucket
+
+  PDFReadLambdaFunction:
+    Type: AWS::Lambda::Function
+    Properties:
+      Handler: index.handler
+      Role: arn:aws:iam::462258285762:role/LabRole
+      FunctionName: read_pdffile
+      Runtime: nodejs14.x
+      Timeout: 240
+      MemorySize: 256
+      Code:
+        S3Bucket: projectbucket5409
+        S3Key: read_pdffile.zip # Replace with the actual key of your JavaScript file in the S3 bucket
+
+  SNSServiceLambdaFunction:
+    Type: AWS::Lambda::Function
+    Properties:
+      Handler: index.handler
+      Role: arn:aws:iam::462258285762:role/LabRole
+      FunctionName: sns-service
+      Runtime: nodejs14.x
+      Timeout: 240
+      MemorySize: 256
+      Code:
+        S3Bucket: projectbucket5409
+        S3Key: sns_service.zip # Replace with the actual key of your JavaScript file in the S3 bucket
+
+  MyS3Bucket:
+    Type: AWS::S3::Bucket
+    DependsOn: ExampleInvokePermission
+    Properties:
+      BucketName: file-upload-textract
+      NotificationConfiguration:
+        LambdaConfigurations:
+          - Event: s3:ObjectCreated:Put
+            Function:
+              Fn::GetAtt:
+                - MyLambdaFunction
+                - Arn
+
+  ExampleInvokePermission:
+    Type: AWS::Lambda::Permission
+    DependsOn: MyLambdaFunction
+    Properties:
+      FunctionName: !GetAtt MyLambdaFunction.Arn
+      Action: lambda:InvokeFunction
+      Principal: s3.amazonaws.com
+      SourceArn: !Sub arn:aws:s3:::file-upload-textract
+
+  MyStateMachine:
+    Type: AWS::StepFunctions::StateMachine
+    Properties:
+      DefinitionString:
+        Fn::Sub: |
+          {
+            "Comment": "Textarct",
+            "StartAt": "Lambda1",
+            "States": {
+              "Lambda1": {
+                "Type": "Task",
+                "Resource": "${PDFReadLambdaFunction.Arn}",
+                "Next": "Lambda2",
+                "ResultPath": "$.result1"
+              },
+              "Lambda2": {
+                "Type": "Task",
+                "Resource": "${SNSServiceLambdaFunction.Arn}",
+                "InputPath": "$.result1",
+                "End": true
+              }
+            }
+            
+          }
+      RoleArn: arn:aws:iam::462258285762:role/LabRole
+
+  MyApi:
+    Type: "AWS::ApiGateway::RestApi"
+    Properties:
+      Name: "MyApi"
+
+  MyApiResource:
+    Type: "AWS::ApiGateway::Resource"
+    Properties:
+      RestApiId: !Ref MyApi
+      ParentId: !GetAtt MyApi.RootResourceId
+      PathPart: "textract"
+
+  MyApiMethod:
+    Type: "AWS::ApiGateway::Method"
+    Properties:
+      AuthorizationType: NONE
+      HttpMethod: POST
+      ResourceId: !Ref MyApiResource
+      RestApiId: !Ref MyApi
+      Integration:
+        IntegrationHttpMethod: POST
+        Type: AWS
+        Uri:
+          Fn::Sub: arn:aws:apigateway:${AWS::Region}:states:action/StartExecution
+        Credentials: arn:aws:iam::462258285762:role/LabRole
+      MethodResponses:
+        - StatusCode: 200
+
+  MyApiDeployment:
+    Type: "AWS::ApiGateway::Deployment"
+    DependsOn: MyApiMethod
+    Properties:
+      RestApiId: !Ref MyApi
+
+  MyApiStage:
+    Type: "AWS::ApiGateway::Stage"
+    Properties:
+      StageName: "Prod" # Change this to your desired stage name
+      DeploymentId: !Ref MyApiDeployment
+      RestApiId: !Ref MyApi
+
+Outputs:
+  ApiEndpoint:
+    Description: "URL of the API endpoint"
+    Value: !Sub "https://${MyApi}.execute-api.${AWS::Region}.amazonaws.com/Prod/textract"
+
+  StateMachineArn:
+    Description: "ARN of the Step Functions state machine"
+    Value: !Ref MyStateMachine
